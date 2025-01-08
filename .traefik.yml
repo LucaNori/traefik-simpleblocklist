@@ -1,0 +1,9 @@
+displayName: SimpleBlocklist
+type: middleware
+import: github.com/LucaNori/traefik-simpleblocklist
+summary: Block requests based on IP blacklist
+testData:
+  blacklistPath: "/etc/traefik/blacklist.txt"
+  allowLocalRequests: true
+  logLocalRequests: false
+  httpStatusCodeDeniedRequest: 403
