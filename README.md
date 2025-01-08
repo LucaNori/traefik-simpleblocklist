@@ -1,6 +1,6 @@
 # SimpleBlocklist
 
-Simple plugin for [Traefik](https://github.com/containous/traefik) to block requests based on a list of IP addresses.
+Simple plugin for [Traefik](https://github.com/containous/traefik) to block requests based on a list of IP addresses and networks.
 
 ## Configuration
 
@@ -15,7 +15,7 @@ experimental:
   plugins:
     simpleblocklist:
       moduleName: github.com/LucaNori/traefik-simpleblocklist
-      version: v0.1.0
+      version: v0.1.2
 ```
 
 ### Installation as Local Plugin
@@ -90,20 +90,28 @@ http:
 
 ### Blacklist File Format
 
-The blacklist file should contain one IP address per line. For example:
+The blacklist file supports both individual IP addresses and CIDR notation for blocking IP ranges. Each entry should be on a new line. Comments (lines starting with #) and empty lines are ignored.
+
+Example blacklist.txt:
 
 ```text
+# Block individual IPs
 192.0.2.1
 203.0.113.2
-198.51.100.3
-```
 
-Empty lines and malformed IP addresses are ignored.
+# Block entire networks
+198.51.100.0/24  # Blocks all IPs from 198.51.100.0 to 198.51.100.255
+172.16.0.0/16    # Blocks a larger network range
+
+# IPv6 addresses and networks are also supported
+2001:db8::1
+2001:db8::/32
+```
 
 ## Configuration Options
 
 ### `blacklistPath` (required)
-Path to the file containing the list of IP addresses to block. Each IP should be on a new line.
+Path to the file containing the list of IP addresses and networks to block. Supports both individual IPs and CIDR notation.
 
 ### `allowLocalRequests` (optional)
 If set to true, will not block requests from private IP ranges (default: true)
@@ -113,6 +121,15 @@ If set to true, will log every connection from any IP in the private IP range (d
 
 ### `httpStatusCodeDeniedRequest` (optional)
 HTTP status code to return when a request is denied (default: 403)
+
+## Features
+
+- Blocks individual IP addresses and entire networks using CIDR notation
+- Supports both IPv4 and IPv6 addresses
+- Allows comments in the blacklist file for better organization
+- Handles X-Forwarded-For, X-Real-IP, and RemoteAddr headers for reliable IP detection
+- Configurable handling of local/private network requests
+- Customizable HTTP status code for denied requests
 
 ## Development
 

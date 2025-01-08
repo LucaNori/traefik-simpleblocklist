@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -43,7 +42,7 @@ func CreateConfig() *Config {
 // SimpleBlocklist a Traefik plugin.
 type SimpleBlocklist struct {
 	next                        http.Handler
-	blacklistedIPs             []net.IP
+	blacklistedIPs             []*net.IPNet
 	allowLocalRequests         bool
 	logLocalRequests          bool
 	privateIPRanges           []*net.IPNet
@@ -70,7 +69,7 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 		config.HTTPStatusCodeDeniedRequest = defaultDeniedRequestHTTPStatusCode
 	}
 
-	infoLogger.Printf("Loaded %d blacklisted IPs", len(blacklistedIPs))
+	infoLogger.Printf("Loaded %d blacklisted IPs/Networks", len(blacklistedIPs))
 	infoLogger.Printf("Allow local IPs: %t", config.AllowLocalRequests)
 	infoLogger.Printf("Log local requests: %t", config.LogLocalRequests)
 	infoLogger.Printf("Denied request status code: %d", config.HTTPStatusCodeDeniedRequest)
@@ -86,19 +85,35 @@ func New(_ context.Context, next http.Handler, config *Config, name string) (htt
 	}, nil
 }
 
-func loadBlacklistedIPs(path string) ([]net.IP, error) {
+func loadBlacklistedIPs(path string) ([]*net.IPNet, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	var ips []net.IP
+	var ips []*net.IPNet
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		ip := net.ParseIP(strings.TrimSpace(scanner.Text()))
-		if ip != nil {
-			ips = append(ips, ip)
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Try parsing as CIDR first
+		if _, ipNet, err := net.ParseCIDR(line); err == nil {
+			ips = append(ips, ipNet)
+			continue
+		}
+
+		// If not CIDR, try as single IP
+		if ip := net.ParseIP(line); ip != nil {
+			// Convert single IP to /32 CIDR
+			ipNet := &net.IPNet{
+				IP:   ip,
+				Mask: net.CIDRMask(32, 32),
+			}
+			ips = append(ips, ipNet)
 		}
 	}
 
@@ -110,35 +125,33 @@ func loadBlacklistedIPs(path string) ([]net.IP, error) {
 }
 
 func (a *SimpleBlocklist) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	reqIPAddr, err := a.collectRemoteIP(req)
-	if err != nil {
-		infoLogger.Println(err)
-		rw.WriteHeader(http.StatusForbidden)
-		return
-	}
+	ipAddresses := a.collectRemoteIP(req)
 
-	for _, ipAddress := range reqIPAddr {
-		ipAddressString := ipAddress.String()
-		privateIP := isPrivateIP(*ipAddress, a.privateIPRanges)
+	for _, ipStr := range ipAddresses {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			infoLogger.Printf("Failed to parse IP: %s", ipStr)
+			continue
+		}
 
-		if privateIP {
+		if isPrivateIP(ip, a.privateIPRanges) {
 			if a.allowLocalRequests {
 				if a.logLocalRequests {
-					infoLogger.Println("Local ip allowed: ", ipAddress)
+					infoLogger.Printf("Local IP allowed: %s", ipStr)
 				}
 				a.next.ServeHTTP(rw, req)
 			} else {
 				if a.logLocalRequests {
-					infoLogger.Println("Local ip denied: ", ipAddress)
+					infoLogger.Printf("Local IP denied: %s", ipStr)
 				}
 				rw.WriteHeader(a.httpStatusCodeDeniedRequest)
 			}
 			return
 		}
 
-		for _, blacklistedIP := range a.blacklistedIPs {
-			if ipAddress.Equal(blacklistedIP) {
-				infoLogger.Printf("%s: request denied [%s] - IP is blacklisted", a.name, ipAddressString)
+		for _, blacklistedNet := range a.blacklistedIPs {
+			if blacklistedNet.Contains(ip) {
+				infoLogger.Printf("%s: request denied [%s] - IP is blacklisted", a.name, ipStr)
 				rw.WriteHeader(a.httpStatusCodeDeniedRequest)
 				return
 			}
@@ -148,46 +161,38 @@ func (a *SimpleBlocklist) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	a.next.ServeHTTP(rw, req)
 }
 
-func (a *SimpleBlocklist) collectRemoteIP(req *http.Request) ([]*net.IP, error) {
-	var ipList []*net.IP
+func (a *SimpleBlocklist) collectRemoteIP(req *http.Request) []string {
+	var ipList []string
 
-	splitFn := func(c rune) bool {
-		return c == ','
-	}
-
-	xForwardedForValue := req.Header.Get(xForwardedFor)
-	xForwardedForIPs := strings.FieldsFunc(xForwardedForValue, splitFn)
-
-	xRealIPValue := req.Header.Get(xRealIP)
-	xRealIPList := strings.FieldsFunc(xRealIPValue, splitFn)
-
-	for _, value := range xForwardedForIPs {
-		ipAddress, err := parseIP(value)
-		if err != nil {
-			return ipList, fmt.Errorf("parsing failed: %s", err)
+	// Get IPs from X-Forwarded-For
+	xff := req.Header.Get(xForwardedFor)
+	if xff != "" {
+		for _, addr := range strings.Split(xff, ",") {
+			addr = strings.TrimSpace(addr)
+			if addr != "" {
+				ipList = append(ipList, addr)
+			}
 		}
-
-		ipList = append(ipList, &ipAddress)
 	}
 
-	for _, value := range xRealIPList {
-		ipAddress, err := parseIP(value)
-		if err != nil {
-			return ipList, fmt.Errorf("parsing failed: %s", err)
+	// Get IP from X-Real-IP
+	if xRealIP := req.Header.Get(xRealIP); xRealIP != "" {
+		ipList = append(ipList, strings.TrimSpace(xRealIP))
+	}
+
+	// Get IP from RemoteAddr
+	ip, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		// If SplitHostPort fails, try using RemoteAddr directly
+		remoteAddr := strings.TrimSpace(req.RemoteAddr)
+		if remoteAddr != "" {
+			ipList = append(ipList, remoteAddr)
 		}
-
-		ipList = append(ipList, &ipAddress)
+	} else {
+		ipList = append(ipList, ip)
 	}
 
-	return ipList, nil
-}
-
-func parseIP(addr string) (net.IP, error) {
-	ipAddress := net.ParseIP(strings.TrimSpace(addr))
-	if ipAddress == nil {
-		return nil, fmt.Errorf("unable parse IP address from address [%s]", addr)
-	}
-	return ipAddress, nil
+	return ipList
 }
 
 func initPrivateIPBlocks() []*net.IPNet {
