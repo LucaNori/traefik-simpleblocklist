@@ -1,7 +1,11 @@
 displayName: SimpleBlocklist
 type: middleware
+iconPath: .assets/icon.png
+
 import: github.com/LucaNori/traefik-simpleblocklist
+
 summary: Block requests based on IP blacklist
+
 testData:
   blacklistPath: "/etc/traefik/blacklist.txt"
   allowLocalRequests: true

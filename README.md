@@ -4,44 +4,69 @@ Simple plugin for [Traefik](https://github.com/containous/traefik) to block requ
 
 ## Configuration
 
-The plugin can be installed locally or through Traefik Pilot.
+The plugin can be installed through Traefik Pilot or as a local plugin.
 
-### Configuration as local plugin
+### Installation through Traefik Pilot
 
-This example assumes that your Traefik instance runs in a Docker container using the [official image](https://hub.docker.com/_/traefik/).
+You can install this plugin directly through the Traefik Pilot web interface or by adding it to your Traefik static configuration:
 
-Download the plugin and save it to a location the Traefik container can reach. The plugin source should be mapped into the container via a volume bind mount:
+```yaml
+experimental:
+  plugins:
+    simpleblocklist:
+      moduleName: github.com/LucaNori/traefik-simpleblocklist
+      version: v0.1.0
+```
+
+### Installation as Local Plugin
+
+For development or testing, you can install the plugin locally. This example assumes that your Traefik instance runs in a Docker container using the [official image](https://hub.docker.com/_/traefik/).
 
 #### `docker-compose.yml`
 
 ```yml
 services:
   traefik:
-    image: traefik
+    image: traefik:v2.10
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /docker/config/traefik/traefik.yml:/etc/traefik/traefik.yml
-      - /docker/config/traefik/dynamic-configuration.yml:/etc/traefik/dynamic-configuration.yml
-      - /docker/config/traefik/plugin/simpleblocklist:/plugins-local/src/github.com/LucaNori/traefik-simpleblocklist/
-      - /docker/config/traefik/blacklist.txt:/etc/traefik/blacklist.txt
+      - ./traefik.yml:/etc/traefik/traefik.yml
+      - ./dynamic-config.yml:/etc/traefik/dynamic-config.yml
+      - ./plugins-local/src/github.com/LucaNori/traefik-simpleblocklist:/plugins-local/src/github.com/LucaNori/traefik-simpleblocklist
+      - ./blacklist.txt:/etc/traefik/blacklist.txt
     ports:
       - "80:80"
+      - "8080:8080"  # Dashboard
 
-  hello:
-    image: containous/whoami
+  whoami:
+    image: traefik/whoami
     labels:
       - traefik.enable=true
-      - traefik.http.routers.hello.entrypoints=http
-      - traefik.http.routers.hello.rule=Host(`hello.localhost`)
-      - traefik.http.services.hello.loadbalancer.server.port=80
-      - traefik.http.routers.hello.middlewares=my-plugin@file
+      - traefik.http.routers.whoami.rule=Host(`whoami.localhost`)
+      - traefik.http.routers.whoami.middlewares=simpleblocklist@file
 ```
 
 #### `traefik.yml`
 
 ```yml
+api:
+  dashboard: true
+  insecure: true  # For testing only
+
 log:
   level: INFO
+
+entryPoints:
+  web:
+    address: ":80"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+  file:
+    directory: /etc/traefik
+    watch: true
 
 experimental:
   localPlugins:
@@ -49,7 +74,7 @@ experimental:
       moduleName: github.com/LucaNori/traefik-simpleblocklist
 ```
 
-#### `dynamic-configuration.yml`
+#### `dynamic-config.yml`
 
 ```yml
 http:
@@ -88,3 +113,19 @@ If set to true, will log every connection from any IP in the private IP range (d
 
 ### `httpStatusCodeDeniedRequest` (optional)
 HTTP status code to return when a request is denied (default: 403)
+
+## Development
+
+To build and test the plugin locally:
+
+1. Clone this repository
+2. Build the plugin: `go build ./...`
+3. Run tests: `go test ./...`
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
